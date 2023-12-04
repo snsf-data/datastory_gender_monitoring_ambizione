@@ -1,0 +1,1147 @@
+---
+title: "`r params$title`"
+format:
+  html:
+    toc: false
+    css: ["style.css"]
+    mainfont: Theinhardt
+    fontsize: "16px"
+    # To use instead of self-contained that has been deprecated
+    embed-resources: true
+    # Using custom page layout (via 'style.css')
+    page-layout: custom
+    # Open link in a new window by default
+    link-external-newwindow: true
+    # Display footnotes in pop-up window when hovering on it
+    footnotes-hover: true
+# The empty params are replaced by those passed to "execute_params" when
+# rendering
+params:
+  title: ""
+  publication_date: ""
+  lang: "de"
+  doi: ""
+  github_url: ""
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r general-setup, include=FALSE}
+## This file contains the ENGLISH version of the data story
+
+# Set general chunk options
+knitr::opts_chunk$set(
+  echo = FALSE, fig.showtext = TRUE, fig.retina = 3, fig.align = "center",
+  warning = FALSE, message = FALSE
+)
+
+# Install snf.datastory package if not available, otherwise load it
+if (!require("snf.datastory")) {
+  if (!require("devtools")) {
+    install.packages("devtools")
+    library(devtools)
+  }
+  install_github("snsf-data/snf.datastory")
+  library(snf.datastory)
+}
+
+# Load packages
+library(tidyverse)
+library(lubridate)
+library(scales)
+library(conflicted)
+library(jsonlite)
+library(here)
+library(glue)
+library(ggiraph)
+library(showtext)
+library(systemfonts)
+
+# Conflict preferences
+conflict_prefer("filter", "dplyr")
+conflict_prefer("get_datastory_theme", "snf.datastory")
+conflict_prefer("get_datastory_scheme", "snf.datastory")
+
+is_theinhardt_available <- file.exists(here("fonts", "TheinhardtReg.otf"))
+
+if (is_theinhardt_available) {
+  
+  sysfonts::font_add(
+    family = "Theinhardt",
+    regular = here("fonts", "TheinhardtReg.otf"),
+    bold = here("fonts", "TheinhardtBold.otf"),
+    bolditalic = here("fonts", "TheinhardtBoldIt.otf"),
+    italic = here("fonts", "TheinhardtRegIt.otf"),
+  )
+  
+  # Need to register the font to allow its use by ggiraph when creating SVG
+  # files.
+  if(!font_family_exists("Theinhardt")){
+    
+    # Register existing/downloaded fonts
+    register_font(
+      name = "Theinhardt",
+      plain = list("fonts/TheinhardtReg.otf", 0),
+      bold = list("fonts/TheinhardtBold.otf", 0),
+      italic = list("fonts/TheinhardtRegIt.otf", 0),
+      bolditalic = list("fonts/TheinhardtBoldIt.otf", 0)
+    )
+  }
+  
+  font <- "Theinhardt"
+  
+} else {
+  
+  font <- "Arial"
+  
+}
+
+# Need if we want to use the registered font in ggiraph plots
+showtext_auto()
+
+# Increase showtext package font resolution
+showtext_opts(dpi = 320)
+
+# Set the locale for date formatting (Windows)
+Sys.setlocale(
+  "LC_TIME",
+  switch(
+    params$lang,
+    en = "English",
+    de = "German",
+    fr = "French"
+  )
+)
+
+# Create function to print number with local language-specific format
+print_num <- function(x) snf.datastory::print_num(x, lang = params$lang)
+
+# Knitr hook for local formatting of printed numbers
+knitr::knit_hooks$set(
+  inline <- function(x) {
+    if (!is.numeric(x)) {
+      x
+    } else {
+      print_num(x)
+    }
+  }
+)
+
+# Function that returns the desired language version of a string, given three
+# language strings are provided to the function.
+translate <- function(en_string = "NOT TRANSLATED",
+                      de_string = "NOT TRANSLATED",
+                      fr_string = "NOT TRANSLATED",
+                      lang = "en") {
+  
+  string <-
+    case_when(
+      lang == "en" ~ en_string, 
+      lang == "de" ~ de_string, 
+      lang == "fr" ~ fr_string, 
+      TRUE ~ "NO VALID LANGUAGE SPECIFIED"
+    )
+  
+  return(string)
+  
+}
+
+```
+
+```{r print-header-infos}
+#| results: asis
+
+# Add publication date to header
+cat(format(as_datetime(params$publication_date), "%d.%m.%Y"))
+```
+
+```{r story-specific-setup}
+#| include: false
+
+# More needed packages:
+library(lme4)
+library(lmtest)
+library(cowplot)
+library(grid)
+library(dbplyr)
+library(stringi)
+library(purrr)
+library(ggrepel)
+library(kableExtra)
+library(forcats)
+
+# Do not show the summarise messages
+options(dplyr.summarise.inform = FALSE)
+
+# Set story-specific variables
+# Start and end dates of the reporting period
+since <- "2012-01-01"
+up_to_date <- "2022-12-01"
+
+# Load the data on Ambizione proposals 
+data_ambizione <-
+  read_csv(file = here("data", "gm_ambizione_data_2023-10-27.csv")) %>%
+  # Encode some variables as factors & specify order of the levels
+  mutate(
+    research_area = factor(research_area, levels = c("SSH", "MINT", "LS")),
+    gender = factor(gender, levels = c("Male", "Female")),
+    previous_snsf_funding = factor(
+      previous_snsf_funding,
+      levels = c("Grant(s)",
+                 "Employment(s) only",
+                 "None")
+    ),
+    call_end_date = ymd(call_end_date),
+    call_name = as.factor(paste0(
+      lubridate::month(
+        call_end_date,
+        label = TRUE,
+        locale = "de_CH.utf8",
+        abbr = TRUE
+      ),
+      ". ",
+      year(call_end_date)
+    ))
+  )
+
+# Language-specific recoding
+data_ambizione <- data_ambizione %>%
+  mutate(
+    research_area = fct_recode(
+      research_area,
+      GSW = "SSH",
+      MINT = "MINT",
+      LW = "LS"
+    ),
+    # Keep English gender labels for use in code
+    gender_en = gender,
+    gender = fct_recode(gender, Männer = "Male", Frauen = "Female"),
+    # Institution type labels for plot
+    inst_type = case_when(
+      inst_type == "Cantonal university" ~ "Kant.\n Univ.",
+      inst_type == "ETH domain" ~ "ETH-\nBereich",
+      inst_type == "UAS/UTE" ~ "FH/PH",
+      inst_type == "Other" ~ "Andere"
+    ),
+    inst_type = factor(
+      inst_type,
+      levels = c("Kant.\n Univ.", "ETH-\nBereich",
+                 "FH/PH", "Andere")
+    ),
+    # Previous SNSF funding labels for plot
+    previous_snsf_funding = case_when(
+      previous_snsf_funding == "Grant(s)" ~ "Beitrag",
+      previous_snsf_funding == "Employment(s) only" ~ "Nur\n Anstellung",
+      previous_snsf_funding == "None" ~ "Keine"
+    ),
+    previous_snsf_funding = factor(
+      previous_snsf_funding,
+      levels = c("Beitrag",
+                 "Nur\n Anstellung",
+                 "Keine")
+    )
+  )
+```
+
+```{r plotting-functions}
+# Source the function for the odd-ratio-trend plots
+source(here("helper_functions", "odds_ratio_plots.R"))
+
+# Function to create ggiraph object
+make_ggiraph <- function(ggobj,
+                         height = 4,
+                         stroke = "#ff0000") {
+  girafe(
+    ggobj = ggobj,
+    height_svg = height,
+    options = list(
+      opts_toolbar(saveaspng = FALSE),
+      opts_hover(css = paste0("fill:#ff0000;stroke:", stroke, ";")),
+      opts_tooltip(
+        css = get_ggiraph_tooltip_css(),
+        opacity = 0.8,
+        delay_mouseover = 0,
+        delay_mouseout = 0
+      )
+    )
+  )
+}
+
+# Function to plot success rates by applicant gender over time,
+# for each research area and overall (if add_overall = TRUE)
+plot_by_research_area_sr <- function(research_area,
+                                     data_pooled = data_pooled,
+                                     data_by_research_area = data_by_research_area,
+                                     limits = c(0.18, .87),
+                                     title = NULL,
+                                     xlab = NULL,
+                                     ylab = NULL,
+                                     inverse_gender = FALSE,
+                                     add_overall = FALSE) {
+  # Subset research area when required
+  if (research_area != "all") {
+    data_by_research_area <- data_by_research_area %>%
+      filter(research_area == research_area)
+  }
+  
+  # When one plot "Overall" should be added
+  if (add_overall) {
+    data_by_research_area <- data_by_research_area %>%
+      bind_rows(data_pooled %>%
+                  mutate(
+                    research_area = translate("Overall",
+                                              "Insgesamt",
+                                              "Général",
+                                              params$lang)
+                  ))
+  }
+  
+  # Ordering of factor levels for research area
+  data_by_research_area <- data_by_research_area %>%
+    mutate(research_area =
+             fct_relevel(
+               research_area,
+               c(
+                 translate("Overall",
+                           "Insgesamt",
+                           "Général",
+                           params$lang),
+                 translate_research_area(research_area = "SSH",
+                                         target_lang = params$lang),
+                 translate_research_area(research_area = "MINT",
+                                         target_lang = params$lang),
+                 translate_research_area(research_area = "LS",
+                                         target_lang = params$lang)
+               )
+             ))
+  
+  
+  # Every second element to display
+  calls_to_display <- data_by_research_area %>%
+    distinct(call_end_date) %>%
+    arrange(call_end_date) %>%
+    pull()
+  calls_to_display <-
+    calls_to_display[seq(1, length(calls_to_display), 2)]
+  
+  # Create the plot
+  p <- data_by_research_area %>%
+    ggplot(
+      mapping =
+        aes(
+          x = call_end_date,
+          y = sr,
+          group = gender,
+          color = gender,
+          tooltip = glue(
+            "Forschungsbereich: {research_area}<br>",
+            "Ausschreibung: {call_name}<br>",
+            "<b>Erfolgsquote {gender}: {round(100*sr)}%</b>"
+          ),
+          data_id = rownames(.)
+        )
+    ) +
+    geom_line(size = 0.5) +
+    geom_point_interactive(size = 2) +
+    labs(title = title, x = xlab, y = ylab) +
+    scale_colour_manual(values = get_datastory_scheme(), "") +
+    scale_y_continuous(labels = scales::percent, limits = limits) +
+    get_datastory_theme(tick_axis = "x", gridline_axis = "y") +
+    scale_x_date(breaks = calls_to_display, date_labels = "%b.\n%Y") +
+    theme(
+      axis.text.y = element_text(size = 8),
+      axis.title.x = element_text(size = 10),
+      axis.title.y = element_text(size = 10),
+      plot.margin = margin(0.5, 2, 1, 2, "mm")
+    )
+  
+  # When we're plotting all research areas, we facet-wrap
+  if (research_area == "all") {
+    p <- p +
+      facet_wrap( ~ research_area)
+  }
+  make_ggiraph(p)
+}
+```
+
+```{r basic_summary-stats, warning=FALSE, message=FALSE}
+# Compute some numbers for use in the text
+
+# Number of calls
+n_call <- data_ambizione %>%
+  select(call_end_date) %>%
+  distinct() %>%
+  nrow()
+
+# Total number of proposals
+n_proposal <- nrow(data_ambizione)
+
+# Total number of grants
+n_grant <- data_ambizione %>%
+  filter(is_approved == TRUE) %>%
+  nrow()
+
+# Total number of applicants
+n_applicant <- data_ambizione %>%
+  pull(applicant_id) %>%
+  unique() %>%
+  length()
+
+# First and last year of the time period considered
+first_year <- year(since)
+last_year <- year(up_to_date)
+n_year <- last_year - first_year + 1
+
+# Number of proposals from female applicants
+n_proposal_female <- data_ambizione %>%
+  filter(gender == translate("Female",
+                             "Frauen", 
+                             "Femmes",
+                              lang = params$lang)) %>%
+  nrow()
+
+# Total number of grants awarded to female applicants
+n_grant_female <- data_ambizione %>%
+  filter(gender == translate("Female",
+                             "Frauen", 
+                             "Femmes",
+                              lang = params$lang),
+         is_approved == TRUE) %>%
+  nrow()
+
+# Total number of grants awarded to male applicants
+n_grant_male <- data_ambizione %>%
+  filter(gender == translate("Male",
+                             "Männer", 
+                             "Hommes",
+                              lang = params$lang),
+         is_approved == TRUE) %>%
+  nrow()
+
+# Percentage of proposals from female applicants
+perc_proposal_female <- 100 * n_proposal_female / n_proposal
+# Percentage of grants awarded to female applicants
+perc_grant_female <- 100 * n_grant_female / n_grant
+```
+
+
+<!-- Short lead (2-3 sentences) in bold -->
+
+**Während der ersten vier Jahre nach dem Doktorat können sich Forschende um einen Ambizione-Förderbeitrag bewerben. Von 2012–2022 hat der SNF 36 Prozent der Beiträge an Frauen vergeben. Woher rührt der Unterschied zu den Männern?**
+
+Frauen sind in der Schweizer Forschungslandschaft nach wie vor untervertreten. Zwar ist der Frauenanteil unter den Doktorierenden in gewissen Disziplinen relativ hoch, [er sinkt jedoch mit jeder Karrierestufe](https://data.snf.ch/stories/je-hoeher-die-karrierestufe-desto-weniger-frauen-de.html).
+
+Daher ist es besonders wichtig, den Erfolg von Frauen auf den frühen und mittleren Karrierestufen zu beobachten und geschlechtsbedingte Verzerrungseffekte aufzudecken. Diese Analyse konzentriert sich auf das Förderinstrument [Ambizione](https://www.snf.ch/de/N18L3oGWomTSSGkF/foerderung/karrieren/ambizione). Es richtet sich an Forschende auf einer frühen Karrierestufe, die ein selbständig geplantes Forschungsprojekt an einer Schweizer Hochschule durchführen möchten.
+
+Berücksichtigt sind alle `r n_call` Ambizione-Ausschreibungen von `r first_year` bis `r last_year` mit über `r print_num(4000)` vollständig begutachteten Ambizione-Gesuchen (Einzelheiten siehe Kasten «Datensatz»).
+
+
+::: info-box
+
+### Datensatz
+
+* Der Datensatz enthält `r print_num(n_proposal)` begutachtete Ambizione-Gesuche, die von `r print_num(n_applicant)` verschiedenen Gesuchstellenden in den Jahren `r first_year`–`r last_year` eingereicht wurden.
+* `r print_num(round(perc_proposal_female, 1))` % der Gesuche stammten von Frauen.
+* Insgesamt wurden in diesem Zeitraum `r n_grant` Ambizione-Beiträge vergeben. An Frauen gingen `r print_num(round(perc_grant_female, 1))` % der Beiträge. 
+* Seit der Ausschreibung vom Januar 2017 beträgt die maximale Laufzeit eines Ambizione-Beitrags 4 Jahre. Zuvor lag die Höchstdauer bei 3 Jahren.
+
+:::
+
+Aus der Analyse resultierten drei wichtige Erkenntnisse:
+
+
+### 1. Substanzieller Anteil der Gesuche von Frauen
+
+Der Anteil der von Frauen eingereichten Gesuche lag bei allen Ausschreibungen zwischen 30 und 40 Prozent. Wie die nachstehende Grafik zeigt, bestehen bei den Geschlechteranteilen beträchtliche Unterschiede zwischen den verschiedenen Forschungsbereichen: Am tiefsten ist der Frauenanteil mit unter 30 Prozent in den MINT-Fächern (Mathematik, Natur- und Ingenieurwissenschaften), was angesichts der [Untervertretung von Frauen](https://data.snf.ch/stories/je-hoeher-die-karrierestufe-desto-weniger-frauen-de.html) in diesen Fächern nicht überrascht. In den Geistes- und Sozialwissenschaften (GSW) hingegen stammten pro Ausschreibung rund 50 Prozent der Gesuche von Frauen.
+
+In den vergangenen Jahren hat der Anteil der Frauen unter den Gesuchstellenden tendenziell leicht zugenommen. Dies ist vor allem darauf zurückzuführen, dass in den Lebenswissenschaften (LW) mehr Forscherinnen ein Gesuch stellten. Erfreulicherweise ist auch in den MINT-Fächern der Anteil der von Frauen eingereichten Gesuche in den letzten Jahren tendenziell leicht gestiegen.
+
+
+::: plot-box
+::: plot-title
+Anteil der Gesuche von Frauen im Zeitverlauf
+:::
+
+```{r submissions-by-gender-trends-plots}
+#| out-width: "100%"
+#| fig-height: 6
+
+# Compute gender shares per call
+pooled_perc_gender <- data_ambizione %>%
+  count(gender, call_end_date, call_name) %>%
+  group_by(call_end_date) %>%
+  mutate(freq = n/sum(n)) %>%
+  ungroup() %>%
+  mutate(data_id = row_number())
+
+# Compute gender shares per research area and call
+perc_gender_by_research_area <- data_ambizione %>%
+  filter(!is.na(call_end_date)) %>%
+  group_by(research_area, gender, call_end_date, call_name) %>%
+  count(gender, call_end_date) %>%
+  group_by(research_area, call_end_date, call_name) %>%
+  mutate(freq = n/sum(n)) %>%
+  ungroup() %>%
+  mutate(data_id = row_number() + nrow(pooled_perc_gender))
+
+# Display all calls in the dataset
+calls_to_display <- pooled_perc_gender %>%
+  distinct(call_end_date) %>%
+  arrange(call_end_date) %>%
+  pull()
+
+# Create the plot of the overall share of female applicants
+p_overall <- pooled_perc_gender %>%
+  filter(gender == translate("Female",
+                             "Frauen",
+                             "Femmes",
+                             lang = params$lang)) %>%
+  ggplot(
+    aes(x = call_end_date, y = freq, group = 1,
+        tooltip = glue(
+          "Ausschreibung: {call_name}<br>",
+          "<b>{round(100*freq)}% {gender}</b>"
+        ),
+        data_id = data_id
+    ),
+    color = get_datastory_scheme(n_col = 4)[4]) +
+  geom_line(size = 0.5) +
+  geom_point_interactive(size = 2) +
+  geom_hline(yintercept = 0.5, linetype = "dashed", size = 0.5) + 
+  labs(title = translate("Overall", "Insgesamt", "Général", 
+                         lang = params$lang),
+                         x = NULL, y = NULL) +
+  scale_y_continuous(labels = scales::percent, limits = c(0, 0.65)) +
+  get_datastory_theme(tick_axis = "x", gridline_axis = "y") +
+  scale_x_date(breaks = calls_to_display, date_labels = "%b.\n%Y") +
+  theme(
+    axis.text.y = element_text(size = 8),
+    axis.title.x = element_text(size = 10),
+    axis.title.y = element_text(size = 10),
+    plot.margin = margin(0.5, 2, 10, 2, "mm")
+  )
+
+# Create the plot of the share of female applicants per research area
+p_by_research_area <- perc_gender_by_research_area %>%
+  filter(gender == translate("Female",
+                             "Frauen",
+                             "Femmes",
+                             lang = params$lang)) %>%
+  ggplot(
+    aes(x = call_end_date, y = freq, group = research_area,
+        color = research_area,
+        tooltip = glue(
+          "Forschungsbereich: {research_area}<br>", 
+          "Ausschreibung: {call_name}<br>",
+          "<b>{round(100*freq)}% {gender}</b>"
+        ),
+        data_id = data_id
+    )
+  ) +
+  geom_line(size = 0.5) +
+  geom_point_interactive(size = 2) +
+  geom_hline(yintercept = 0.5, linetype = "dashed", size = 0.5,
+             color = "black") +
+  labs(title = translate("By research area",
+                         "Nach Forschungsbereich", 
+                         "Par domaine de recherche",
+                         lang = params$lang),
+       x = NULL, y = NULL) +
+  scale_colour_manual(values = get_datastory_scheme(n_col = 3)[c(2, 1, 3)]) +
+  scale_y_continuous(labels = scales::percent, limits = c(0, 0.65)) +
+  get_datastory_theme(tick_axis = "x", gridline_axis = "y") +
+  scale_x_date(breaks = calls_to_display, date_labels = "%b.\n%Y") +
+  theme(
+    axis.text.y = element_text(size = 8),
+    axis.title.x = element_text(size = 10),
+    axis.title.y = element_text(size = 10),
+    plot.margin = margin(t = 0.5, r = 2, b = 1, l = 2, "mm")
+  )
+
+# Arrange the two plots
+make_ggiraph(plot_grid(plotlist = list(p_overall, p_by_research_area),
+                       nrow = 2, rel_heights = c(1, 1.28)),
+             height = 6)
+```
+
+::: caption
+
+:::
+:::
+
+
+### 2. Frauen haben ähnliche Gesamterfolgsquoten wie Männer
+
+Die folgende Tabelle zeigt die Erfolgsquoten – d. h. den Anteil der vollständig begutachteten Gesuche, die bewilligt wurden – für alle `r n_call` Ausschreibungen. Die Gesamterfolgsquote war bei beiden Geschlechtern ähnlich. In den MINT-Fächern hatten die Frauen jedoch eine höhere Erfolgsquote als die Männer, während umgekehrt die männlichen Gesuchstellenden in den GSW erfolgreicher waren.
+
+
+::: plot-box
+::: plot-title
+Erfolgsquoten von männlichen und weiblichen Gesuchstellenden bei allen `r n_call` Ausschreibungen insgesamt
+:::
+```{r sr-table}
+# Compute success rate by gender over all calls
+sr_summary <- data_ambizione %>%
+  group_by(gender_en)  %>%
+  summarise(SR = 100 * mean(is_approved, na.rm = TRUE)) %>%
+  pivot_wider(names_from = gender_en,
+              values_from = SR,
+              names_prefix = "SR_") %>%
+  mutate(research_area = translate("Overall",
+                                   "Insgesamt",
+                                   "Général",
+                                   params$lang))
+
+# Compute success rates by gender and research area over all calls
+sr_summary_research_area <- data_ambizione %>%
+  group_by(research_area, gender_en) %>%
+  summarise(SR = 100 * mean(is_approved, na.rm = TRUE)) %>%
+  pivot_wider(names_from = gender_en,
+              values_from = SR,
+              names_prefix = "SR_")
+
+# Create a table with the success rates and
+# the differences between the success rates by gender
+sr_tab <- sr_summary_research_area %>%
+  bind_rows(sr_summary) %>%
+  mutate(
+    diff = round(SR_Female, 1) - round(SR_Male, 1),
+    SR_Female = paste0(format(
+      SR_Female, digits = 3, nsmall = 1, 
+      decimal.mark = "," 
+    ), "%"),
+    SR_Male = paste0(format(
+      SR_Male, digits = 3, nsmall = 1,
+      decimal.mark = "," 
+    ), "%"),
+    diff = paste0(format(diff, nsmall = 1,
+                         decimal.mark = "," ), 
+                  "%"),
+    research_area = factor(
+      research_area,
+      levels = c(
+        translate_research_area(research_area = "SSH",
+                                target_lang = params$lang),
+        translate_research_area(research_area = "MINT",
+                                target_lang = params$lang),
+        translate_research_area(research_area = "LS",
+                                target_lang = params$lang),
+        translate("Overall",
+                  "Insgesamt",
+                  "Général",
+                  params$lang)
+      )
+    )
+  )
+
+# Adapt order of columns (SR Female before SR Male) and
+# display the table
+sr_tab[, c(1, 3, 2, 4)] %>%
+  kable(
+    col.names = c(
+      translate("Research area", "Forschungsbereich", "Domaine de recherche",
+                lang = params$lang),
+      translate("SR Women", "EQ Frauen", "TS Femmes",
+                lang = params$lang),
+      translate("SR Men", "EQ Männer", "TS Hommes",
+                lang = params$lang),
+      translate(
+        "Difference: SR Women - SR Men",
+        "Differenz: EQ Frauen - EQ Männer",
+        "Différence: TS Femmes - TS Hommes",
+        lang = params$lang
+      )
+    ),
+    align = c("l", rep("r", times = 3))
+  ) %>%
+  row_spec(3, hline_after = T) %>%
+  row_spec(4, bold = T)
+```
+
+::: caption
+
+:::
+:::
+
+Betrachtet man die Erfolgsquoten pro Ausschreibung, wie dies in den nachstehenden Grafiken dargestellt ist, resultieren beträchtliche Unterschiede:
+
+
+::: plot-box
+::: plot-title
+Erfolgsquoten nach Geschlecht im Zeitverlauf, insgesamt und nach Forschungsbereich
+:::
+
+```{r sr-trends-plot}
+#| out-width: "100%"
+#| fig-height: 3.5
+
+# Compute success rates by gender and call
+pooled_sr_gender <- data_ambizione %>%
+  group_by(gender, call_end_date, call_name) %>%
+  summarise(sr = mean(is_approved, na.rm = TRUE)) %>%
+  ungroup()
+
+# Compute success rates by research area, gender and call
+sr_gender_by_research_area <- data_ambizione %>%
+  filter(!is.na(call_end_date)) %>%
+  group_by(research_area, gender, call_end_date, call_name) %>%
+  summarise(sr = mean(is_approved, na.rm = TRUE)) %>%
+  ungroup()
+
+# Plot the success rates by gender, overall and by research area
+plot_by_research_area_sr(
+  research_area = "all",
+  data_pooled = pooled_sr_gender,
+  data_by_research_area = sr_gender_by_research_area,
+  inverse_gender = TRUE,
+  title = NULL,
+  xlab = NULL,
+  limits = c(0, 0.6),
+  ylab = translate("Success rate\n",
+                   "Erfolgsquote\n",
+                   "Taux de succès",
+                   lang = params$lang),
+  add_overall = TRUE
+)
+```
+
+::: caption
+Die Gesamterfolgsquote für Gesuche von Frauen war bei der Ausschreibung im November 2017 am höchsten. Diese war ein Spezialfall, da sie eine PRIMA-Übertragungsoption hin zu Ambizione bot: Das PRIMA-Förderinstrument unterstützt Forscherinnen in einem etwas späteren Karrierestadium als Ambizione. Bei dieser Ausschreibung wurden 13 PRIMA-Gesuche, die nicht aus dem PRIMA-Budget finanziert werden konnten, auf Ambizione übertragen. 10 dieser Gesuche wurden durch Ambizione finanziert.
+:::
+:::
+
+Sind diese Unterschiede bei den Erfolgsquoten der Gesuche von Frauen bzw. von Männern im Zeitverlauf auf zufällige Schwankungen zurückzuführen? Oder gibt es Hinweise auf signifikante Unterschiede zwischen den Förderchancen von weiblichen und männlichen Gesuchstellenden? Diese Frage wurde mit statistischen Modellen untersucht.
+
+
+### 3. Keine signifikanten Unterschiede bei den Erfolgschancen
+
+#### Andere relevante Faktoren als das Geschlecht
+
+Scheinbare Diskrepanzen zwischen den Geschlechtern beim Fördererfolg gewisser Ausschreibungen müssen nicht zwingend durch das Geschlecht bedingt sein. Vielmehr können weitere Merkmale der Gesuchstellenden eine Rolle spielen – oder auch Faktoren, die sowohl mit dem Geschlecht als auch mit dem Fördererfolg korrelieren, sogenannte Störfaktoren. Ein möglicher Störfaktor ist zum Beispiel eine vorangegangene Förderung durch den SNF. Wie die nachfolgende Grafik zeigt, war der Anteil der Gesuchstellenden, die schon einmal einen SNF-Beitrag erhalten hatten, bei den Frauen höher. Und bei Gesuchstellenden, an die bereits früher ein SNF-Beitrag vergeben wurde, ist die Erfolgsquote höher.
+
+Folgende potenziellen Störfaktoren wurden in den verwendeten statistischen Modellen berücksichtigt:
+
+* Vorherige SNF-Förderung (Kategorien: a. hat zuvor einen SNF-Beitrag erhalten, b. hat zuvor bei einem SNF-Projekt mitgearbeitet, aber noch nie selber einen SNF-Beitrag erhalten, c. hat noch nie SNF-Beiträge erhalten)
+* Akademisches Alter (d. h. Anzahl der vollendeten Jahre seit der Promotion) als Indikator für die Forschungserfahrung
+* Art der Institution, an denen die Gesuchstellenden tätig sind (Kategorien: a. Kantonale Universität, b. ETH-Bereich, c. Fachhochschule oder Pädagogische Hochschule, d. andere).
+
+Die nachstehenden Diagramme veranschaulichen die Verteilung dieser drei Störfaktoren in den `r n_call` Ausschreibungen insgesamt.
+
+
+```{r prev-funding-plot}
+
+# Compute the shares of the previous funding categories by gender
+prev_funding_summary <- data_ambizione %>%
+  group_by(gender, previous_snsf_funding) %>%
+  summarise(n = n()) %>%
+  mutate(freq = n / sum(n)) %>%
+  ungroup()
+
+# Illustrate the distribution of the previous funding categories by gender
+# by using a barplot
+plot_prev_funding <-
+  prev_funding_summary %>%
+  mutate(
+    previous_funding_label = str_replace(previous_snsf_funding, "\n", " "),
+    data_id = paste0(row_number(), "a")
+  ) %>% 
+  ggplot(aes(
+    previous_snsf_funding,
+    freq,
+    group = gender,
+    tooltip = glue(
+      "Vorherige Förderung durch den SNF: {previous_funding_label}<br>",
+      "Geschlecht: {gender}<br>",
+      "<b>{round(100*freq)}% der Gesuche von diesem Geschlecht<b>"
+    ),
+    data_id = data_id
+  )) +
+  geom_col_interactive(aes(fill = gender),
+                       position = position_dodge(preserve = "single"),
+                       color = "white") +
+  scale_y_continuous(labels = percent_format(accuracy = 1),
+                     limits = c(0, 0.7)) +
+  scale_fill_manual(values = get_datastory_scheme()) +
+  guides(fill = guide_legend(nrow = 1)) +
+  labs(
+    title = translate(
+      "Previous funding categories",
+      "Vorherige Förderung",
+      "Catégories de financement antérieures",
+      lang = params$lang
+    ),
+    x = NULL,
+    y = translate(
+      "% of proposals\n",
+      "Gesuche in Prozent\n",
+      "% de requêtes soumises\n",
+      lang = params$lang
+    )
+  ) +
+  get_datastory_theme(gridline_axis = "y",
+                      legend_position = "none") +
+  theme(axis.title.y = element_text(size = 9))
+```
+
+
+```{r acad-age-plot}
+#| out-width: "100%"
+#| fig-height: 3.5
+
+# Create groups for the academic age
+data_ambizione <- data_ambizione %>%
+  mutate(
+    acad_age_group = case_when(
+      academic_age < 2 ~ "0-1",
+      academic_age < 3 ~ "2",
+      academic_age < 4 ~ "3",
+      academic_age < 5 ~ "4",
+      academic_age < 6 ~ "5",
+      academic_age >= 6 ~ ">5",
+      TRUE ~ "missing"
+    ),
+    acad_age_group = factor(acad_age_group,
+                            levels = c("0-1", "2", "3", "4", "5", ">5"))
+  )
+
+# Compute shares of the academic age groups for each gender
+acad_age_summary <- data_ambizione %>%
+  group_by(gender, acad_age_group) %>%
+  summarise(n = n()) %>%
+  mutate(freq = n / sum(n)) %>%
+  ungroup()
+
+# Illustrate the distribution of the academic age groups by gender
+# by using a barplot
+plot_acad_age <- acad_age_summary %>%
+  mutate(data_id = paste0(row_number(), "c")) %>%
+  ggplot(aes(
+    acad_age_group,
+    freq,
+    group = gender,
+    tooltip = glue(
+      "Akademisches Alter: {acad_age_group}<br>",
+      "Geschlecht: {gender}<br>",
+      "<b>{round(100*freq)}% der Gesuche von diesem Geschlecht<b>"
+    ),
+    data_id = data_id
+  )) +
+  geom_col_interactive(aes(fill = gender),
+                       position = position_dodge(preserve = "single"),
+                       color = "white") +
+  scale_y_continuous(labels = percent_format(accuracy = 1)) +
+  scale_fill_manual(values = get_datastory_scheme()) +
+  guides(fill = guide_legend(nrow = 1)) +
+  labs(
+    title = translate(
+      "Academic age (years)",
+      "Akademisches Alter (Jahre)",
+      "Âge académique (en années)",
+      lang = params$lang
+    ),
+    x = NULL,
+    y = translate(
+      "% of proposals\n",
+      "Gesuche in Prozent\n",
+      "% de requêtes soumises\n",
+      lang = params$lang
+    )
+  ) +
+  get_datastory_theme(gridline_axis = "y",
+                      legend_position = "none") +
+  theme(axis.title.y = element_text(size = 9))
+```
+
+
+```{r inst-type-plot}
+
+# Rename and reorder the institution types for the plot
+data_ambizione <- data_ambizione %>%
+  # No additional abbreviations needed in French
+  mutate(inst_type_renamed = inst_type)
+
+# Compute shares of institution types for each gender
+inst_type_summary <- data_ambizione %>%
+  group_by(gender, inst_type_renamed) %>%
+  summarise(n = n()) %>%
+  mutate(freq = n / sum(n)) %>%
+  ungroup()
+
+# Illustrate the distribution of the institution types by gender
+# by using a barplot
+plot_inst_type_with_legend <- inst_type_summary %>%
+  mutate(
+    inst_type_label = str_replace(inst_type_renamed, "\n", " "),
+    data_id = paste0(row_number(), "b")
+  ) %>% 
+  ggplot(aes(
+    inst_type_renamed,
+    freq,
+    group = gender,
+    tooltip = glue(
+      "Institutionsart: {inst_type_label}<br>",
+      "Geschlecht: {gender}<br>",
+      "<b>{round(100*freq)}% der Gesuche von diesem Geschlecht<b>"
+    ),
+    data_id = data_id
+  )) +
+  geom_col_interactive(aes(fill = gender),
+                       position = position_dodge(preserve = "single"),
+                       color = "white") +
+  scale_y_continuous(labels = percent_format(accuracy = 1),
+                     limits = c(0, 0.7)) +
+  scale_fill_manual(values = get_datastory_scheme()) +
+  guides(fill = guide_legend(nrow = 2)) +
+  labs(
+    title = translate(
+      "Institution types",
+      "Institutionsarten",
+      "Types d' institutions",
+      lang = params$lang
+    ),
+    x = NULL,
+    y = NULL
+  ) +
+  get_datastory_theme(gridline_axis = "y",
+                      legend_margin = margin(l = 35, b = 80)) +
+  theme(
+    axis.title.y = element_text(size = 9),
+    legend.text = element_text(
+      margin = margin(r = 2, unit = "mm"),
+    ),
+  )
+
+# Extract the legend to add it to the combined plot
+legend_confounder_distr <-
+  cowplot::get_legend(plot_inst_type_with_legend)
+
+plot_inst_type <- plot_inst_type_with_legend +
+  get_datastory_theme(legend_position = "none",
+                      gridline_axis = "y")
+```
+
+
+::: plot-box
+::: plot-title
+Verteilung der Störfaktoren
+:::
+```{r plots-confounders-distribution}
+#| out-width: "100%"
+#| fig-height: 6
+
+# Arrange all 3 confounder distribution plots
+make_ggiraph(plot_grid(
+  plotlist = list(
+    plot_prev_funding,
+    plot_inst_type,
+    plot_acad_age,
+    legend_confounder_distr
+  ),
+  nrow = 2
+), stroke = "")
+```
+
+::: caption
+Abkürzungen: Kant. Univ. = Kantonale Universitäten, ETH = ETH-Bereich, FH/PH = Fachhochschulen und Pädagogische Hochschulen.
+:::
+:::
+
+
+#### Quantifizierung des Fördererfolgs nach Geschlecht
+
+Wie haben sich nun die geschlechtsspezifischen Erfolgschancen von Gesuchstellenden im Laufe der Zeit verändert? Um diese Frage zu beantworten, wurden Schätzungen für die drei Forschungsbereiche mit einem statistischen Modell (logistische Regression) vorgenommen, unter Einbezug der erwähnten Störfaktoren (siehe Kasten «Statistische Methoden» für weitere Einzelheiten).
+
+Dabei zeigte sich, dass die beobachteten geschlechtsspezifischen Unterschiede statistisch nicht signifikant sind (Signifikanzniveau 5 %). Frauen und Männer haben somit grundsätzlich die gleichen Chancen, für ein eingereichtes Gesuch einen Beitrag zu erhalten. 
+
+Die Ergebnisse sind nachfolgend dargestellt. Ein Chancenverhältnis (Odds Ratio) für das Geschlecht von 1 bedeutet, dass beide Geschlechter die gleichen Erfolgschancen haben. Ein Chancenverhältnis von über bzw. unter 1 signalisiert, dass die Chancen für weibliche bzw. männliche Gesuchstellende höher sind (Definitionen siehe Kasten «Chancen, Chancenverhältnisse und Konfidenzintervalle» in der [Datengeschichte über Störfaktoren](https://data.snf.ch/stories/der-einfluss-von-stoerfaktoren-de.html)). 
+
+Zum Beispiel beträgt das Chancenverhältnis für das Geschlecht im Zeitraum 2021/2022 bei den GSW 1,28. Dies bedeutet, dass die Chance für Gesuchstellerinnen, einen Beitrag zu erhalten, 1,28-mal so hoch war wie die Erfolgschance für Gesuchsteller. Da das 95%-Konfidenzintervall für jedes Ausschreibungspaar den Wert 1 enthält, sind die beobachteten Geschlechtsunterschiede bei den Erfolgsquoten aber statistisch nicht signifikant (Signifikanzniveau 5 %).
+
+
+```{r models-or-trends-adjusted, warning = TRUE, message=TRUE, results='hide'}
+# Add centered academic age to dataset
+data_ambizione <- data_ambizione %>%
+  group_by(research_area) %>%
+  # Center the academic age
+  mutate(scale_acad_age = scale(academic_age, scale = FALSE)) %>%
+  ungroup()
+
+# Group calls into pairs for use in the logistic regression models
+data_ambizione <- data_ambizione %>%
+  mutate(
+    call_period = case_when(
+      year(call_end_date) <= 2013 ~ "2012/2013",
+      year(call_end_date) <= 2015 ~ "2014/2015",
+      call_end_date <= ymd("2017-06-01") ~ "2016/2017",
+      year(call_end_date) <= 2018 ~ "2017/2018",
+      year(call_end_date) <= 2020 ~ "2019/2020",
+      year(call_end_date) <= 2022 ~ "2021/2022",
+      TRUE ~ "unknown time period"
+    ),
+    call_period = as.factor(call_period)
+  )
+
+# Formula for logistic regression (adjusted by confounders)
+formula_adj <- as.numeric(is_approved) ~ call_period * gender +
+  previous_snsf_funding + scale_acad_age + inst_type
+
+# Computation of models for odds ratio trends (adjusted by confounders):
+# Fit a separate model for each research area
+research_areas <- c("GSW", "MINT", "LW")
+
+# Save the results in a list
+fit_adjusted <- lapply(1:3, function(i) {
+  data_subset <- data_ambizione %>%
+    filter(research_area == research_areas[i])
+  return(glm(formula_adj, family = "binomial", data = data_subset))
+})
+# Add names to the list
+names(fit_adjusted) <- research_areas
+```
+
+::: plot-box
+::: plot-title
+Geschlechter-Chancenverhältnis im Zeitverlauf
+:::
+
+```{r plots-or-trends}
+#| out-width: "100%"
+#| fig-height: 4
+
+# Get the number of time periods to show (points in the plot)
+n_time_periods <- data_ambizione %>%
+  pull(call_period) %>%
+  unique() %>%
+  length()
+
+# Get the names of the dummy variables (the same for all 3 research areas)
+names_coef <- names(coef(fit_adjusted[["GSW"]]))
+dummy_variables_adj <-
+  c(1, rep(0, length(names_coef[-c(which(names_coef == "(Intercept)"),
+                                   which(grepl("call_period", names_coef)))]) - 1))
+# Select the colors to use
+colors <- get_datastory_scheme(n_col = 3)[c(2, 1, 3)]
+
+# Set the y axis limits
+ylim_OR_plot <- c(0.01, 4)
+# Specify the positions and labels for the x axis
+ats <- seq(1, length(levels(data_ambizione$call_period)))
+axis_ticks <- levels(data_ambizione$call_period)
+
+odd_ratio_all_areas <-
+  bind_rows(
+    prep_odd_ratio(
+      model = fit_adjusted[["GSW"]],
+      dummy_variables = dummy_variables_adj,
+      number_time_periods = n_time_periods,
+      time_period = axis_ticks,
+      ci = TRUE,
+      mixed = FALSE,
+      area = translate_research_area("SSH", target_lang = params$lang)
+    ),
+    prep_odd_ratio(
+      model = fit_adjusted[["MINT"]],
+      dummy_variables = dummy_variables_adj,
+      number_time_periods = n_time_periods,
+      time_period = axis_ticks,
+      ci = TRUE,
+      mixed = FALSE,
+      area = translate_research_area("MINT", target_lang = params$lang)
+    ),
+    prep_odd_ratio(
+      model = fit_adjusted[["LW"]],
+      dummy_variables = dummy_variables_adj,
+      number_time_periods = n_time_periods,
+      time_period = axis_ticks,
+      ci = TRUE,
+      mixed = FALSE,
+      area = translate_research_area("LS", target_lang = params$lang)
+    )
+  )
+
+odd_ratio_all_areas_plot <-
+  odd_ratio_all_areas %>%
+  mutate(
+    period_label = str_replace(period, "/", "\n"),
+    area = factor(area, levels = c("GSW", "MINT", "LW")),
+    data_id = row_number()
+  ) %>%
+  ggplot() +
+  aes(
+    x = period_label,
+    y = or,
+    color = area,
+    group = area,
+    tooltip =
+      paste0(
+        "Chancenverhältnis: ",
+        round(or, 2),
+        "\nForschungsbereich: ",
+        area,
+        "\nZeitraum: ",
+        period
+      ),
+    data_id = data_id
+  ) +
+  geom_hline(yintercept = 1, linetype = "dashed") +
+  geom_line(linewidth = 0.5) +
+  geom_point_interactive(size = 2) +
+  geom_line(aes(y = lower_limit),
+            linetype = "dashed",
+            linewidth = 0.5) +
+  geom_line(aes(y = upper_limit),
+            linetype = "dashed",
+            linewidth = 0.5) +
+  labs(y = translate("Odds Ratio",
+                     "Chancenverhältnis",
+                     "Rapport des chances",
+                     lang = params$lang),
+       x = translate("Year of call deadlines",
+                     "Eingabejahr",
+                     "Année de la mise au concours",
+                     lang = params$lang),) +
+  scale_y_continuous(limits = c(0.01, 4)) +
+  scale_color_manual(values = get_datastory_scheme(n_col = 3)[c(2, 1, 3)]) +
+  facet_wrap( ~ area, ncol = 2) +
+  get_datastory_theme(title_axis = c("x", "y")) +
+  theme(legend.position = "")
+
+make_ggiraph(odd_ratio_all_areas_plot)
+```
+
+::: caption
+Bereinigtes Geschlechter-Chancenverhältnis von weiblichen zu männlichen Gesuchstellenden (Punkte), zusammen mit 95%-Konfidenzintervallen (gestrichelte Linien) pro Paar aufeinanderfolgender Ausschreibungen. Ein Chancenverhältnis von über 1 bedeutet, dass weibliche Gesuchstellende höhere Chancen auf eine Finanzierung haben. Die Schätzungen zum Chancenverhältnis sind bereinigt um frühere SNF-Beiträge, das akademische Alter und die Institutionsart. Die Jahre der jeweiligen Eingabedaten der Ausschreibungen sind auf der x-Achse angegeben. «2016/2017» bezieht sich auf die Ausschreibungen im Februar 2016 und Januar 2017, «2017/2018» auf die Ausschreibungen im November 2017 und November 2018.
+:::
+:::
+
+Dass in den letzten 11 Jahren weniger Frauen (`r n_grant_female`) als Männer (`r n_grant_male`) Ambizione-Beiträge erhielten, ist auf die geringere Zahl der von Frauen eingereichten Gesuche zurückzuführen und nicht auf signifikante geschlechtsspezifische Unterschiede bei den Chancen auf eine Förderung. Weitere Monitorings für alle SNF-Förderprogramme sind auch künftig wichtig, damit allfällige geschlechtsbedingte Verzerrungseffekte bei der Evaluation von Forschungsgesuchen erkannt werden können. 
+
+
+::: info-box
+
+### Statistische Methoden: Modelle für den Fördererfolg nach Geschlecht im Zeitverlauf
+
+Zur Modellierung des Zusammenhangs zwischen dem Geschlecht und dem Fördererfolg wurden logistische Regressionsmodelle geschätzt. Dabei bildete der Fördererfolg das binäre Ergebnis und das Geschlecht die erklärende Variable. Die im Text genannten Störfaktoren wurden als zusätzliche erklärende Variablen einbezogen.
+
+Zur Analyse der Entwicklung im Zeitverlauf wurden zusätzlich die Zeit (Eingabetermine der Ausschreibungen) und ein Interaktionsterm zwischen Geschlecht und Zeit in die Regressionsmodelle integriert. Da die Zahl der Ausschreibungen relativ hoch ist, wurden die Ausschreibungen in Paare von aufeinanderfolgenden Ausschreibungen gruppiert, und für jedes Paar wurde ein Chancenverhältnis für das Geschlecht geschätzt.
+
+Aus früheren Analysen ist bekannt, dass der Zusammenhang zwischen Geschlecht und Fördererfolg in den verschiedenen Forschungsbereichen recht unterschiedlich sein kann. Daher wurden die Schätzungen für jeden der drei Forschungsbereiche (GSW, MINT und LW) separat modelliert. 
+
+:::
+
+Daten, Text und Code dieser Datengeschichte sind [auf Github verfügbar](`r params$github_url`) und [auf Zenodo archiviert](`r params$doi`).<br>DOI: `r str_remove(params$doi, "https://doi.org/")`
+
+```{r prevent-internal-snsf-packages, include=FALSE}
+#| include: false
+
+# Internal SNSF packages must not be used in data stories, as their
+# pre-processing functions are internal and the corporate design differs from
+# the data portal.
+if (any(c("snfverse", "snf.preprocessing", "snf.plot") %in% 
+        loadedNamespaces())) {
+  stop(glue(
+    "You must not use internal SNSF packages in data stories.",
+    " Please resort to snf.datastory."
+  ))
+}
+```
